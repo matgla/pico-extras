@@ -6,6 +6,8 @@
 
 #pragma GCC push_options
 
+#define PICO_SCANVIDEO_DEBUG_IMPL 1
+
 #if !PICO_SCANVIDEO_DEBUG_IMPL
 #undef PARAM_ASSERTIONS_DISABLE_ALL
 #define PARAM_ASSERTIONS_DISABLE_ALL 1
@@ -1254,7 +1256,37 @@ void scanvideo_set_scanline_repeat_fn(scanvideo_scanline_repeat_count_fn fn) {
     _scanline_repeat_count_fn = fn ? fn : default_scanvideo_scanline_repeat_count_fn;
 }
 
+static pio_program_t video_program;
+static pio_program_t timing_program;
+
 bool scanvideo_setup(const scanvideo_mode_t *mode) {
+    return scanvideo_setup_with_timing(mode, mode->default_timing);
+}
+
+bool scanvideo_change_mode(const scanvideo_mode_t *mode) {
+    video_timing_enabled = false;
+    sem_reset(&vblank_begin, 1);
+    pio_sm_set_enabled(video_pio, PICO_SCANVIDEO_SCANLINE_SM, false);
+    dma_set_irq0_channel_mask_enabled(PICO_SCANVIDEO_SCANLINE_DMA_CHANNELS_MASK, false);
+    
+    dma_channel_unclaim(PICO_SCANVIDEO_SCANLINE_DMA_CHANNEL);
+    pio_sm_unclaim(video_pio, PICO_SCANVIDEO_SCANLINE_SM);
+#if PICO_SCANVIDEO_PLANE_COUNT > 1 
+    pio_sm_set_enabled(video_pio, PICO_SCANVIDEO_SCANLINE_SM2, false);
+    pio_sm_unclaim(video_pio, PICO_SCANVIDEO_SCANLINE_SM2);
+    dma_channel_unclaim(PICO_SCANVIDEO_SCANLINE_DMA_CHANNEL2);
+
+#if PICO_SCANVIDEO_PLANE_COUNT > 2 
+    pio_sm_set_enabled(video_pio, PICO_SCANVIDEO_SCANLINE_SM3, false);
+    pio_sm_unclaim(video_pio, PICO_SCANVIDEO_SCANLINE_SM3);
+    dma_channel_unclaim(PICO_SCANVIDEO_SCANLINE_DMA_CHANNEL3);
+
+#endif 
+#endif
+    pio_sm_set_enabled(video_pio, PICO_SCANVIDEO_TIMING_SM, false);
+    pio_sm_unclaim(video_pio, PICO_SCANVIDEO_TIMING_SM);
+    pio_remove_program(video_pio, &video_program, video_program_load_offset);
+    pio_remove_program(video_pio, &timing_program, video_htiming_load_offset);
     return scanvideo_setup_with_timing(mode, mode->default_timing);
 }
 
@@ -1266,6 +1298,7 @@ static pio_program_t copy_program(const pio_program_t *program, uint16_t *instru
     copy.instructions = instructions;
     return copy;
 }
+
 
 bool scanvideo_setup_with_timing(const scanvideo_mode_t *mode, const scanvideo_timing_t *timing) {
     __builtin_memset(&shared_state, 0, sizeof(shared_state));
@@ -1365,14 +1398,14 @@ bool scanvideo_setup_with_timing(const scanvideo_mode_t *mode, const scanvideo_t
     valid_params_if(SCANVIDEO_DPI, mode->height * mode->yscale <= timing->v_active * video_mode.yscale_denominator);
 
     uint16_t instructions[32];
-    pio_program_t modified_program = copy_program(mode->pio_program->program, instructions,
+    video_program = copy_program(mode->pio_program->program, instructions,
                                                        count_of(instructions));
 
     if (!mode->pio_program->adapt_for_mode(mode->pio_program, mode, &_missing_scanline_buffer.core, instructions)) {
         valid_params_if(SCANVIDEO_DPI, false);
     }
     valid_params_if(SCANVIDEO_DPI, _missing_scanline_buffer.core.data && _missing_scanline_buffer.core.data_used);
-    video_program_load_offset = pio_add_program(video_pio, &modified_program);
+    video_program_load_offset = pio_add_program(video_pio, &video_program);
 
 #if PICO_SCANVIDEO_ENABLE_VIDEO_RECOVERY
     int program_wait_index = -1;
@@ -1409,7 +1442,7 @@ bool scanvideo_setup_with_timing(const scanvideo_mode_t *mode, const scanvideo_t
 #endif
 
     uint32_t side_set_xor = 0;
-    modified_program = copy_program(&video_htiming_program, instructions, count_of(instructions));
+    timing_program = copy_program(&video_htiming_program, instructions, count_of(instructions));
 
     if (timing->clock_polarity) {
         side_set_xor = 0x1000; // flip the top side set bit
@@ -1419,7 +1452,7 @@ bool scanvideo_setup_with_timing(const scanvideo_mode_t *mode, const scanvideo_t
         }
     }
 
-    video_htiming_load_offset = pio_add_program(video_pio, &modified_program);
+    video_htiming_load_offset = pio_add_program(video_pio, &timing_program);
 
     setup_sm(PICO_SCANVIDEO_TIMING_SM, video_htiming_load_offset);
 

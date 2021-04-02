@@ -165,6 +165,8 @@ typedef struct scanvideo_mode {
 } scanvideo_mode_t;
 
 extern bool scanvideo_setup(const scanvideo_mode_t *mode);
+extern bool scanvideo_change_mode(const scanvideo_mode_t *mode);
+
 extern bool scanvideo_setup_with_timing(const scanvideo_mode_t *mode, const scanvideo_timing_t *timing);
 extern void scanvideo_timing_enable(bool enable);
 // these take effect after the next vsync
